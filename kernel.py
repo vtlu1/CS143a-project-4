@@ -16,7 +16,7 @@ class PCB:
     priority: int
     num_quantum_ticks: int
     process_type: str
-    
+
     def __init__(self, pid: PID, priority: int, process_type: str):
         self.pid = pid
         self.priority = priority
@@ -67,7 +67,7 @@ class Kernel:
         self.semaphores = {}
         self.mutexes = {}
 
-        self.free_list = [(10 * 1024 * 1024, memory_size)]  # (start, size)
+        self.free_list = [(10 * 1024 * 1024, memory_size - 10 * 1024 * 1024)]  # (start, size)
         self.process_memory = {}
 
     def new_process_arrived(self, new_process: PID, priority: int, process_type: str, stack_memory_needed: int, heap_memory_needed: int) -> PID:
@@ -78,18 +78,18 @@ class Kernel:
         if stack_alloc is None:
             return -1
 
-        heap_alloc = None
+        heap_allocation = None
         if heap_bytes > 0:
-            heap_alloc = self.best_fit_allocate(heap_bytes)
-            if heap_alloc is None:
+            heap_allocation = self.best_fit_allocate(heap_bytes)
+            if heap_allocation is None:
                 self.free_memory(stack_alloc[0], stack_alloc[1])
                 return -1
 
         self.process_memory[new_process] = {
             "stack_base": stack_alloc[0],
             "stack_size": stack_alloc[1],
-            "heap_base": heap_alloc[0] if heap_alloc else None,
-            "heap_size": heap_alloc[1] if heap_alloc else 0
+            "heap_base": heap_allocation[0] if heap_allocation else None,
+            "heap_size": heap_allocation[1] if heap_allocation else 0
         }
 
         self.mmu.process_memory = self.process_memory
@@ -211,24 +211,24 @@ class Kernel:
         self.semaphores[semaphore_id] = {"value": initial_value, "waiting": []}
 
     def syscall_semaphore_p(self, semaphore_id: int) -> PID:
-        a_sem = self.semaphores[semaphore_id]
-        a_sem["value"] -= 1
-        if a_sem["value"] < 0:
-            a_sem["waiting"].append(self.running)
+        a_semaphone = self.semaphores[semaphore_id]
+        a_semaphone["value"] -= 1
+        if a_semaphone["value"] < 0:
+            a_semaphone["waiting"].append(self.running)
             self.running = self.idle_pcb
             self.choose_next_process()
 
         return self.running.pid
 
     def syscall_semaphore_v(self, semaphore_id: int) -> PID:
-        a_sem = self.semaphores[semaphore_id]
-        a_sem["value"] += 1
+        a_semaphone = self.semaphores[semaphore_id]
+        a_semaphone["value"] += 1
 
-        if a_sem["value"] <= 0 and len(a_sem["waiting"]) > 0:
+        if a_semaphone["value"] <= 0 and len(a_semaphone["waiting"]) > 0:
             if self.scheduling_algorithm == PRIORITY:
-                returned_process = pop_min_priority(a_sem["waiting"])
+                returned_process = pop_min_priority(a_semaphone["waiting"])
             else:
-                returned_process = pop_min_pid(a_sem["waiting"])
+                returned_process = pop_min_pid(a_semaphone["waiting"])
             returned_process.num_quantum_ticks = 0
             self.ready_queue.append(returned_process)
             if self.scheduling_algorithm == PRIORITY:
@@ -272,28 +272,27 @@ class Kernel:
         return self.running.pid
 
     def best_fit_allocate(self, size):
-        best_index = -1
+        best_i = -1
         best_size = float('inf')
         for i, (start, hole_size) in enumerate(self.free_list):
             if hole_size >= size and hole_size < best_size:
-                best_index = i
+                best_i = i
                 best_size = hole_size
-        if best_index == -1:
+        if best_i == -1:
             return None
 
-        start, hole_size = self.free_list[best_index]
+        start, hole_size = self.free_list[best_i]
         alloc_start = start
         remaining = hole_size - size
         if remaining > 0:
-            self.free_list[best_index] = (start + size, remaining)
+            self.free_list[best_i] = (start + size, remaining)
         else:
-            self.free_list.pop(best_index)
+            self.free_list.pop(best_i)
         return (alloc_start, size)
 
     def free_memory(self, start, size):
         self.free_list.append((start, size))
         self.free_list.sort()
-
         merged = []
         prev_start, prev_size = self.free_list[0]
 
@@ -316,21 +315,19 @@ class MMU:
     def translate(self, address: int, pid: PID) -> int | None:
         if pid not in self.process_memory:
             return None
-        mem = self.process_memory[pid]
+        memory = self.process_memory[pid]
         heap_start = 0x20000000
-        heap_end = heap_start + mem["heap_size"]
+        heap_end = heap_start + memory["heap_size"]
 
-        if mem["heap_size"] > 0 and heap_start <= address < heap_end:
-            offset = address - heap_start
-            return mem["heap_base"] + offset
-
+        if memory["heap_size"] > 0 and heap_start <= address < heap_end:
+            stack_offset = address - heap_start
+            return memory["heap_base"] + stack_offset
         stack_top = 0xEFFFFFFF
-        stack_bottom = stack_top - mem["stack_size"] + 1
+        stack_bottom = stack_top - memory["stack_size"] + 1
 
         if stack_bottom <= address <= stack_top:
-            offset = stack_top - address
-            return mem["stack_base"] + (mem["stack_size"] - 1 - offset)
-
+            stack_offset = stack_top - address
+            return memory["stack_base"] + (memory["stack_size"] - 1 - stack_offset)
         return None
 
 
@@ -341,12 +338,20 @@ def exceeded_quantum(pcb: PCB) -> bool:
     return False
 
 
-def pop_min_priority(pcbs: list[PCB]) -> PCB:
-    min_index = 0
-    for i in range(1, len(pcbs)):
-        if pcbs[i].priority < pcbs[min_index].priority or (pcbs[i].priority == pcbs[min_index].priority and pcbs[i].pid < pcbs[min_index].pid):
-            min_index = i
-    return pcbs.pop(min_index)
+def pop_min_priority(pcbs):
+    pcbs_list = list(pcbs)
+    min_i = 0
+    for i in range(1, len(pcbs_list)):
+        if (pcbs_list[i].priority < pcbs_list[min_i].priority or
+           (pcbs_list[i].priority == pcbs_list[min_i].priority and
+            pcbs_list[i].pid < pcbs_list[min_i].pid)):
+            min_i = i
+    chosen = pcbs_list.pop(min_i)
+
+    # rebuild
+    pcbs.clear()
+    pcbs.extend(pcbs_list)
+    return chosen
 
 
 def pop_min_pid(pcbs: list[PCB]):
@@ -354,4 +359,5 @@ def pop_min_pid(pcbs: list[PCB]):
     for i in range(1, len(pcbs)):
         if pcbs[i].pid < pcbs[lowest_pid_i].pid:
             lowest_pid_i = i
+
     return pcbs.pop(lowest_pid_i)
