@@ -16,16 +16,14 @@ class PCB:
     priority: int
     num_quantum_ticks: int
     process_type: str
-
+    
     def __init__(self, pid: PID, priority: int, process_type: str):
         self.pid = pid
         self.priority = priority
         self.num_quantum_ticks = 0
         self.process_type = process_type
-
     def __str__(self):
         return f"({self.pid}, {self.priority})"
-
     def __repr__(self):
         return f"({self.pid}, {self.priority})"
 
@@ -69,10 +67,33 @@ class Kernel:
         self.semaphores = {}
         self.mutexes = {}
 
-    def new_process_arrived(self, new_process: PID, priority: int, process_type: str, stack_memory_needed: int,
-                            heap_memory_needed: int) -> PID:
-        # NOTE: Memory allocation NOT implemented yet (you will add later)
-        # For now, just accept all processes
+        self.free_list = [(10 * 1024 * 1024, memory_size)]  # (start, size)
+        self.process_memory = {}
+
+    def new_process_arrived(self, new_process: PID, priority: int, process_type: str, stack_memory_needed: int, heap_memory_needed: int) -> PID:
+        stack_bytes = stack_memory_needed
+        heap_bytes = heap_memory_needed
+
+        stack_alloc = self.best_fit_allocate(stack_bytes)
+        if stack_alloc is None:
+            return -1
+
+        heap_alloc = None
+        if heap_bytes > 0:
+            heap_alloc = self.best_fit_allocate(heap_bytes)
+            if heap_alloc is None:
+                self.free_memory(stack_alloc[0], stack_alloc[1])
+                return -1
+
+        self.process_memory[new_process] = {
+            "stack_base": stack_alloc[0],
+            "stack_size": stack_alloc[1],
+            "heap_base": heap_alloc[0] if heap_alloc else None,
+            "heap_size": heap_alloc[1] if heap_alloc else 0
+        }
+
+        self.mmu.process_memory = self.process_memory
+
         self.ready_queue.append(PCB(new_process, priority, process_type))
 
         if self.scheduling_algorithm == MULTILEVEL and self.running is self.idle_pcb:
@@ -82,6 +103,15 @@ class Kernel:
         return self.running.pid
 
     def syscall_exit(self) -> PID:
+        pid = self.running.pid
+
+        if pid in self.process_memory:
+            mem = self.process_memory[pid]
+            self.free_memory(mem["stack_base"], mem["stack_size"])
+            if mem["heap_size"] > 0:
+                self.free_memory(mem["heap_base"], mem["heap_size"])
+            del self.process_memory[pid]
+
         self.running = self.idle_pcb
         self.choose_next_process()
         return self.running.pid
@@ -98,13 +128,10 @@ class Kernel:
         elif self.scheduling_algorithm == PRIORITY:
             if len(self.ready_queue) == 0:
                 return
-
             if self.running is not self.idle_pcb:
                 self.ready_queue.append(self.running)
-
             next_process = pop_min_priority(self.ready_queue)
             self.running = next_process
-
         elif self.scheduling_algorithm == RR:
             self.rr_chose_next_process(self.ready_queue)
 
@@ -115,12 +142,10 @@ class Kernel:
                     self.rr_ready_queue.append(pcb)
                 elif pcb.process_type == BACKGROUND:
                     self.fcfs_ready_queue.append(pcb)
-
             if self.active_queue == FOREGROUND:
                 self.rr_chose_next_process(self.rr_ready_queue)
             elif self.active_queue == BACKGROUND:
                 self.fcfs_chose_next_process(self.fcfs_ready_queue)
-
             if self.running is self.idle_pcb:
                 self.switch_active_queue()
 
@@ -174,7 +199,6 @@ class Kernel:
 
         if self.scheduling_algorithm == RR:
             self.choose_next_process()
-
         elif self.scheduling_algorithm == MULTILEVEL:
             if self.active_queue_num_ticks >= ACTIVE_QUEUE_NUM_TICKS:
                 self.switch_active_queue()
@@ -189,7 +213,6 @@ class Kernel:
     def syscall_semaphore_p(self, semaphore_id: int) -> PID:
         a_sem = self.semaphores[semaphore_id]
         a_sem["value"] -= 1
-
         if a_sem["value"] < 0:
             a_sem["waiting"].append(self.running)
             self.running = self.idle_pcb
@@ -206,10 +229,8 @@ class Kernel:
                 returned_process = pop_min_priority(a_sem["waiting"])
             else:
                 returned_process = pop_min_pid(a_sem["waiting"])
-
             returned_process.num_quantum_ticks = 0
             self.ready_queue.append(returned_process)
-
             if self.scheduling_algorithm == PRIORITY:
                 self.choose_next_process()
 
@@ -221,7 +242,6 @@ class Kernel:
 
     def syscall_mutex_lock(self, mutex_id: int) -> PID:
         mutex = self.mutexes[mutex_id]
-
         if not mutex["lock"]:
             mutex["lock"] = True
             mutex["owner"] = self.running.pid
@@ -234,13 +254,11 @@ class Kernel:
 
     def syscall_mutex_unlock(self, mutex_id: int) -> PID:
         mutex = self.mutexes[mutex_id]
-
         if len(mutex["waiting"]) > 0:
             if self.scheduling_algorithm == PRIORITY:
                 returned_process = pop_min_priority(mutex["waiting"])
             else:
                 returned_process = pop_min_pid(mutex["waiting"])
-
             self.ready_queue.append(returned_process)
             mutex["owner"] = returned_process.pid
             mutex["lock"] = True
@@ -253,12 +271,66 @@ class Kernel:
 
         return self.running.pid
 
+    def best_fit_allocate(self, size):
+        best_index = -1
+        best_size = float('inf')
+        for i, (start, hole_size) in enumerate(self.free_list):
+            if hole_size >= size and hole_size < best_size:
+                best_index = i
+                best_size = hole_size
+        if best_index == -1:
+            return None
+
+        start, hole_size = self.free_list[best_index]
+        alloc_start = start
+        remaining = hole_size - size
+        if remaining > 0:
+            self.free_list[best_index] = (start + size, remaining)
+        else:
+            self.free_list.pop(best_index)
+        return (alloc_start, size)
+
+    def free_memory(self, start, size):
+        self.free_list.append((start, size))
+        self.free_list.sort()
+
+        merged = []
+        prev_start, prev_size = self.free_list[0]
+
+        for curr_start, curr_size in self.free_list[1:]:
+            if prev_start + prev_size == curr_start:
+                prev_size += curr_size
+            else:
+                merged.append((prev_start, prev_size))
+                prev_start, prev_size = curr_start, curr_size
+
+        merged.append((prev_start, prev_size))
+        self.free_list = merged
+
 
 class MMU:
     def __init__(self, logger):
         self.logger = logger
+        self.process_memory = {}
 
     def translate(self, address: int, pid: PID) -> int | None:
+        if pid not in self.process_memory:
+            return None
+        mem = self.process_memory[pid]
+        heap_start = 0x20000000
+        heap_end = heap_start + mem["heap_size"]
+
+        if mem["heap_size"] > 0 and heap_start <= address < heap_end:
+            offset = address - heap_start
+            return mem["heap_base"] + offset
+
+        stack_top = 0xEFFFFFFF
+        stack_bottom = stack_top - mem["stack_size"] + 1
+
+        if stack_bottom <= address <= stack_top:
+            offset = stack_top - address
+            return mem["stack_base"] + (mem["stack_size"] - 1 - offset)
+
         return None
 
 
@@ -272,8 +344,7 @@ def exceeded_quantum(pcb: PCB) -> bool:
 def pop_min_priority(pcbs: list[PCB]) -> PCB:
     min_index = 0
     for i in range(1, len(pcbs)):
-        if pcbs[i].priority < pcbs[min_index].priority or \
-                (pcbs[i].priority == pcbs[min_index].priority and pcbs[i].pid < pcbs[min_index].pid):
+        if pcbs[i].priority < pcbs[min_index].priority or (pcbs[i].priority == pcbs[min_index].priority and pcbs[i].pid < pcbs[min_index].pid):
             min_index = i
     return pcbs.pop(min_index)
 
