@@ -271,6 +271,7 @@ class Kernel:
 
         return self.running.pid
 
+    # Allocate the best fit based on the size of the memory
     def best_fit_allocate(self, size):
         best_i = -1
         best_size = float('inf')
@@ -281,6 +282,8 @@ class Kernel:
         if best_i == -1:
             return None
 
+
+        #Find the best block to allocate in memory
         start, hole_size = self.free_list[best_i]
         alloc_start = start
         remaining = hole_size - size
@@ -290,12 +293,16 @@ class Kernel:
             self.free_list.pop(best_i)
         return (alloc_start, size)
 
+
+    # Check the size of any free memory that is stored to ensure that the size between the previous block
+    # Deallocates in memory
     def free_memory(self, start, size):
         self.free_list.append((start, size))
         self.free_list.sort()
         merged = []
         prev_start, prev_size = self.free_list[0]
 
+        #Check the current attributes like size and merges the adjacent blocks
         for curr_start, curr_size in self.free_list[1:]:
             if prev_start + prev_size == curr_start:
                 prev_size += curr_size
@@ -306,25 +313,34 @@ class Kernel:
         merged.append((prev_start, prev_size))
         self.free_list = merged
 
-
+# Given MMU class in which handles the process memory
 class MMU:
     def __init__(self, logger):
         self.logger = logger
         self.process_memory = {}
 
+    # MUST Complete according to document
+    # Virtual address translation into physical address
     def translate(self, address: int, pid: PID) -> int | None:
         if pid not in self.process_memory:
             return None
         memory = self.process_memory[pid]
+
+        # start the heap at 0x20000000
         heap_start = 0x20000000
         heap_end = heap_start + memory["heap_size"]
+
 
         if memory["heap_size"] > 0 and heap_start <= address < heap_end:
             stack_offset = address - heap_start
             return memory["heap_base"] + stack_offset
+        
+        # Treat as a given stack at 0xEFFFFFFF
         stack_top = 0xEFFFFFFF
         stack_bottom = stack_top - memory["stack_size"] + 1
 
+        # Iterate through the bottom of the stack and ensure the address is between the top
+        # Finds the offset
         if stack_bottom <= address <= stack_top:
             stack_offset = stack_top - address
             return memory["stack_base"] + (memory["stack_size"] - 1 - stack_offset)
@@ -339,6 +355,7 @@ def exceeded_quantum(pcb: PCB) -> bool:
 
 
 def pop_min_priority(pcbs):
+    # Take the PCB list and iterate through the given priorities
     pcbs_list = list(pcbs)
     min_i = 0
     for i in range(1, len(pcbs_list)):
@@ -348,12 +365,12 @@ def pop_min_priority(pcbs):
             min_i = i
     chosen = pcbs_list.pop(min_i)
 
-    # rebuild
+    # Once a chosen has been picked from the list return it as the selected process
     pcbs.clear()
     pcbs.extend(pcbs_list)
     return chosen
 
-
+# Pops the minimum priority based on the pid in memory
 def pop_min_pid(pcbs: list[PCB]):
     lowest_pid_i = 0
     for i in range(1, len(pcbs)):
